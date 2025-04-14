@@ -11,6 +11,8 @@ import { program } from 'commander';
 import RepoAnalyzer from './lib/analyzer.js';
 import { log } from './lib/Utill.js';
 
+import checkRateLimit from './lib/checkLimit.js';
+
 dotenv.config();
 
 const ENV_PATH = path.join(import.meta.dirname, '.env');
@@ -24,9 +26,21 @@ program
     .option('-f, --format <type>', 'Output format (table, chart, both)', 'both')
     .option('-c, --use-cache', 'Use previously cached GitHub data')
     .option('-u, --user-name', 'Display user`s real name')
+    .option("--check-limit", "Check GitHub API rate limit");
 
 program.parse(process.argv);
 const options = program.opts();
+
+if (options.checkLimit) {
+    await checkRateLimit(options.apiKey);
+    process.exit(0);
+  }
+
+if (!options.repo) {
+  console.error('Error: --repo option is required.');
+  program.help();
+  process.exit(1);
+}
 
 // ------------- JSON ↔ Map 변환 유틸리티 함수 -------------
 function jsonToMap(jsonObj, depth = 0) {
