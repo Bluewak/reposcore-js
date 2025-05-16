@@ -44,6 +44,7 @@ program
     .option('-t, --theme <theme>', '분석 테마 설정 (default/dark)')
     .option('--create-theme <json>', '새 테마 생성 (JSON 형식)')
     .option('--change-theme <name>', '사용할 테마 선택 (default, dark, 또는 사용자 정의)')
+    .option('--threshold <score>', '특정 점수 이상인 참여자만 출력', parseInt)
     .option('--user <username>', '해당 사용자 결과만 표시')
     .arguments('<path..>', '저장소 경로 (예: user/repo)')
     .option('--colored-output', '색상이 포함된 텍스트 파일 출력');
@@ -170,22 +171,77 @@ async function main() {
 
         const scoresMap = analyzer.calculateScores();
 
-        if (options.user) {
-            const scores = Array.from(scoresMap.values())[0];
+        let filteredScores = scoresMap;
 
-            const target = scores.find(
-                (s) => s[0]?.toLowerCase() === options.user.toLowerCase()
-            );
+        if (options.threshold !== undefined) {
+            filteredScores = Array.from(filteredScores).map(([repo, scoreList]) => {
+                const filteredList = scoreList.filter(entry => entry[6] >= options.threshold);
+                return [repo, filteredList];
+            }).filter(([_, list]) => list.length > 0); 
+        }
 
-            if (!target) {
+       if (options.user) {
+            const allScoresRaw = Array.from(scoresMap.entries()); // [repoName, [[user1], ...]]
+            const userScores = new Map(); // username → { total: number, perRepo: Map }
+
+            for (const [repoName, users] of allScoresRaw) {
+                // 'total' 저장소는 합산에서 제외
+                if (repoName.toLowerCase() === 'total') continue;
+
+                for (const score of users) {
+                    const username = score[0]?.toLowerCase();
+                    const repoScore = score[6];
+                    if (!username) continue;
+
+                    if (!userScores.has(username)) {
+                        userScores.set(username, { total: 0, perRepo: new Map() });
+                    }
+
+                    const entry = userScores.get(username);
+                    entry.total += repoScore;
+                    const repoKey = repoName.replace("oss2025hnu_", ""); // 깔끔하게
+                    entry.perRepo.set(repoKey, repoScore);
+                }
+            }
+
+            // 'total' 점수는 따로 perRepo에만 표시
+            const totalRepo = allScoresRaw.find(([name]) => name.toLowerCase() === 'total');
+            if (totalRepo) {
+                for (const score of totalRepo[1]) {
+                    const username = score[0]?.toLowerCase();
+                    const totalScore = score[6];
+                    if (!username || !userScores.has(username)) continue;
+
+                    userScores.get(username).perRepo.set('total', totalScore);
+                }
+            }
+
+            const targetKey = options.user.toLowerCase();
+            const targetData = userScores.get(targetKey);
+            if (!targetData) {
                 console.log(`사용자 "${options.user}"를 찾을 수 없습니다.`);
-            } else {
-                console.log(`\n [${target[0]}] 점수 출력`);
-                console.log(`- Score: ${target[6]}`);
+                return;
+            }
+
+            const sorted = Array.from(userScores.entries())
+                .sort((a, b) => b[1].total - a[1].total);
+            const rank = sorted.findIndex(([name]) => name === targetKey) + 1;
+            const totalUsers = sorted.length;
+
+            // 출력
+            console.log(`\n[${options.user}] 기여 정보`);
+            console.log(`- total: ${targetData.perRepo.get('total') ?? targetData.total}`);
+            console.log(`- 등수: ${rank}등 (전체 ${totalUsers}명 중)\n`);
+            console.log(`저장소별 점수:`);
+
+            for (const [repo, score] of targetData.perRepo.entries()) {
+                if (repo === 'total') continue; // total은 위에서 출력했으므로 생략
+                console.log(`- ${repo}: ${score}`);
             }
 
             return;
         }
+        
 
         // Calculate AverageScore
         analyzer.calculateAverageScore(scores);
@@ -195,14 +251,15 @@ async function main() {
 
         // Generate outputs based on format
         if (['all', 'text'].includes(options.format)) {
-            await analyzer.generateTable(realNameScore || scores || [], options.output, options);
+            await analyzer.generateTable(filteredScores, options.output, options);
         }
         if (['all', 'table'].includes(options.format)) {
-            await analyzer.generateCsv(realNameScore || scores || [], options.output);
+            await analyzer.generateCsv(filteredScores, options.output);
         }
         if (['all', 'chart'].includes(options.format)) {
-            await analyzer.generateChart(realNameScore || scores || [], options.output);
+            await analyzer.generateChart(filteredScores, options.output);
         }
+
 
         // 모든 출력 형식이 "all" 인 경우에만 HTML 리포트 생성
         if (options.format === 'all') {
